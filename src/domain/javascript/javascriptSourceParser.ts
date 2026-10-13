@@ -1,7 +1,48 @@
 import { parse, type ParserOptions, type ParserPlugin } from "@babel/parser";
+import * as t from "@babel/types";
+import { traverseJavaScriptAst } from "./javascriptSemanticTraversal.js";
+import { recordTypeScriptModuleErasure } from "./javascriptModuleDeclaration.js";
 
 /** Babel AST produced by REA's inert JavaScript parser boundary. */
 export type ParsedJavaScriptSource = ReturnType<typeof parse>;
+
+/** Babel 8 uses [] for both an omitted attribute clause and an explicit with {}. */
+const preserveModuleAttributePresence = (
+  file: ParsedJavaScriptSource,
+  source: string,
+): ParsedJavaScriptSource => {
+  const commentEnds = new Map<number, number>();
+  for (const comment of file.comments ?? [])
+    if (typeof comment.start === "number" && typeof comment.end === "number")
+      commentEnds.set(comment.start, comment.end);
+  traverseJavaScriptAst(file.program, {
+    enter: (node) => {
+      if (
+        (!t.isImportDeclaration(node) &&
+          !t.isExportNamedDeclaration(node) &&
+          !t.isExportAllDeclaration(node)) ||
+        node.attributes?.length !== 0 ||
+        node.source?.end === null ||
+        node.source?.end === undefined ||
+        node.end === null ||
+        node.end === undefined
+      )
+        return;
+      // The parser already owns the declaration/source spans. Only trivia and
+      // the optional semicolon can follow the source when no clause is present.
+      let cursor = node.source.end;
+      while (cursor < node.end) {
+        const commentEnd = commentEnds.get(cursor);
+        if (commentEnd !== undefined && commentEnd <= node.end)
+          cursor = commentEnd;
+        else if (/\s|;/u.test(source[cursor] ?? "")) cursor += 1;
+        else return;
+      }
+      delete node.attributes;
+    },
+  });
+  return file;
+};
 
 /**
  * Babel plugins for one source path. Single owner for TypeScript/JSX
@@ -20,7 +61,7 @@ export type ParsedJavaScriptSource = ReturnType<typeof parse>;
  */
 export const parserPluginsForPath = (sourcePath?: string): ParserPlugin[] => {
   const path = sourcePath ?? "";
-  const dts = /\.d\.(?:ts|mts|cts)$/iu.test(path);
+  const dts = isTypeScriptDeclarationSourcePath(path);
   const isTsLike = /\.(?:ts|cts|mts)$/iu.test(path);
   const isTsx = /\.tsx$/iu.test(path);
   const isMts = /\.mts$/iu.test(path);
@@ -36,6 +77,10 @@ export const parserPluginsForPath = (sourcePath?: string): ParserPlugin[] => {
     ? ["decorators-legacy", "jsx", typescript]
     : ["decorators-legacy", typescript];
 };
+
+/** Source suffix that selects TypeScript's declaration-file parser context. */
+const isTypeScriptDeclarationSourcePath = (path?: string): boolean =>
+  /\.d\.(?:ts|mts|cts)$/iu.test(path ?? "");
 
 /** `.mjs` and `.mts` explicitly select module mode. */
 export const isExplicitModuleSourcePath = (path?: string): boolean =>
@@ -130,11 +175,17 @@ export const parseJavaScriptSource = (
     });
     // Unambiguous mode retains module-only diagnostics after choosing a script.
     // The .cjs extension establishes wrapper mode, so obtain its own diagnostics.
-    return commonjs &&
-      file.program.sourceType === "script" &&
-      file.errors.length > 0
-      ? parse(source, { ...options, sourceType: "commonjs" })
-      : file;
+    const recovered = preserveModuleAttributePresence(
+      commonjs && file.program.sourceType === "script" && file.errors.length > 0
+        ? parse(source, { ...options, sourceType: "commonjs" })
+        : file,
+      source,
+    );
+    recordTypeScriptModuleErasure(
+      recovered.program,
+      isTypeScriptDeclarationSourcePath(sourcePath),
+    );
+    return recovered;
   } catch (cause: unknown) {
     // Unparseable source is represented by the null return.
     void cause;

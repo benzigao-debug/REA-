@@ -1,4 +1,5 @@
 import * as t from "@babel/types";
+import { typescriptImportResolutionMode } from "./typescriptImportResolutionMode.js";
 
 import {
   failedJavaScriptSemanticIr,
@@ -43,7 +44,11 @@ import {
 import { semanticRequireOrigin } from "./javascriptSemanticRequireOrigin.js";
 import { collectSemanticMemberMutationsSteps } from "./javascriptSemanticMemberMutations.js";
 import { indexJavaScriptAmbientWritesSteps } from "./javascriptSemanticAmbientWrites.js";
-import { hasUncertainTypeOnlyModuleSideEffect } from "./javascriptModuleDeclaration.js";
+import {
+  hasUncertainTypeOnlyModuleSideEffect,
+  isTypeOnlyImportDeclaration,
+  isTypeOnlyImportSpecifier,
+} from "./javascriptModuleDeclaration.js";
 import {
   collectSemanticReturns,
   resolveSemanticModuleCallables,
@@ -1103,6 +1108,7 @@ const bindImports = (
   scope: JavaScriptSemanticScopeState,
   state: JavaScriptSemanticAnalysisState,
 ): void => {
+  const resolutionMode = typescriptImportResolutionMode(node);
   for (const specifier of node.specifiers) {
     const importedPath = t.isImportDefaultSpecifier(specifier)
       ? ["default"]
@@ -1117,13 +1123,15 @@ const bindImports = (
       mutable: false,
       definitionNode: specifier.local,
       initializer: null,
-      directOrigin: { specifier: node.source.value, importedPath },
+      directOrigin: {
+        specifier: node.source.value,
+        importedPath,
+        ...(resolutionMode === undefined ? {} : { resolutionMode }),
+      },
       runtimeImport:
-        node.importKind !== "type" &&
-        node.importKind !== "typeof" &&
+        !isTypeOnlyImportDeclaration(node) &&
         (!t.isImportSpecifier(specifier) ||
-          (specifier.importKind !== "type" &&
-            specifier.importKind !== "typeof")),
+          !isTypeOnlyImportSpecifier(specifier)),
     });
   }
 };
