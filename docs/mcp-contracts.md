@@ -696,6 +696,28 @@ valid JSON Schema that still accepts every canonical example. Client verificatio
 also checks provider-facing sizes and canonical examples after conversion by
 the actual Kimi Code CLI; local captures do not establish Moonshot acceptance.
 
+### Tool family advertising scope
+
+Agents pay context for every advertised tool schema, and clients that send
+catalog payloads with each request (see the Claude Code measurements above)
+can spend more context on tool definitions than on the investigation. Setting
+the server's `REA_MCP_TOOL_FAMILIES` environment variable to a comma-separated
+subset of the catalog's tool-family ids (the `tools.families` entries in the
+product catalog) restricts the registration to those families. A selection
+outside the published family ids fails server startup with the complete id
+list; the setting is read at startup, so restart the server to apply changes.
+
+Out-of-scope tools stay registered but disabled: `tools/list` omits their
+names and schemas entirely, and a direct call fails with the SDK's
+`Tool ... disabled` invalid-params error rather than disappearing silently.
+Canonical server-side validation and Evidence semantics are unchanged for
+the tools that remain advertised. The default (unset) advertises the complete
+catalog exactly as before.
+
+`rea setup --client <id> --tool-families <ids>` writes the same selection
+into the `env` object of that client's `rea` entry, so the scope travels with
+the registration; rerunning setup with a different selection refreshes it.
+
 ### Output schemas
 
 Self-contained output schemas advertise a content-bound `$id`, including their

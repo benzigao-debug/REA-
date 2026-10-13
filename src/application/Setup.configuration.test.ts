@@ -409,3 +409,37 @@ describe("MSIX Claude Desktop setup", () => {
     expect(host.skillInstalls).toBe(1);
   });
 });
+
+describe("setup tool family scope", () => {
+  it("writes the requested scope into the registration environment", async () => {
+    const host = new FakeSetupHost();
+    host.doctorHealthy = true;
+    host.skill = "unchanged";
+    host.clients = [{ name: "cursor", configPath: "/cursor.json" }];
+
+    const plan = await runSetup(
+      {
+        ...options(false),
+        clientIds: ["cursor"],
+        toolFamilies: "session,application",
+      },
+      host,
+    );
+    expect(plan.plannedActions[0]?.detail).toContain(
+      "REA_MCP_TOOL_FAMILIES=session,application",
+    );
+
+    const applied = await runSetup(
+      {
+        ...options(true),
+        clientIds: ["cursor"],
+        toolFamilies: "session,application",
+      },
+      host,
+    );
+    expect(applied.status).toBe("ready");
+    expect(host.configuredProviderEnvironments).toContainEqual({
+      REA_MCP_TOOL_FAMILIES: "session,application",
+    });
+  });
+});
