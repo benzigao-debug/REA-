@@ -145,6 +145,20 @@ Select the part you want to check:
 | One agent registration              | `rea doctor --client codex --json` (see [client IDs](#supported-agents)) |
 | Installed workflow instructions     | `rea doctor --skill --json`                                              |
 
+### Linux owned-process prerequisite
+
+On Linux, workflows that launch an REA-owned child process require a
+procps-compatible `ps` command on REA's `PATH` so REA can inspect process
+ownership before launch. This applies across providers, including Ghidra,
+JADX, firmware tools, and JavaScript/Electron analysis. If `ps` is missing or
+cannot perform that ownership check, install `procps` or put another
+procps-compatible `ps` earlier on `PATH`; otherwise the workflow fails with a
+typed prerequisite or launch failure before starting the provider child. The
+public error code depends on the caller: some workflows preserve that refusal
+as `capability_unavailable`, while provider adapters can project it as
+`provider_unavailable` or `execution_failure`. Inspect the returned details for
+the prerequisite and recovery guidance.
+
 A scoped report has `scope.mode: "explicit"`. Its `scope_checks` determine
 `healthy` and the exit status. Other checks appear in `informational_checks`;
 `environment_healthy` summarizes the full audit. `--target` adds a target check,

@@ -132,6 +132,8 @@ Ajanınız, hedefi incelemek ve ilgili kodu izlemek için MCP üzerinden REA'yı
 
 REA; Node.js 22.x (>=22.19), 24.x (>=24.11) veya 26+ ve npm gerektirir. Ek araçlar ve desteklenen ana bilgisayar sistemleri hedefe bağlıdır:
 
+Linux üzerinde REA'nın sahip olduğu alt süreçleri başlatan tüm iş akışları, Ghidra, JADX, firmware ve JavaScript/Electron analizi dahil, `PATH` üzerinde procps uyumlu `ps` gerektirir.
+
 | Hedef                                   | REA'nın döndürdükleri                                                                                       | Gereksinimler ve rehber                                                                                                            |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | Yerel makine kodu içeren ikili dosyalar | Sözde kod, assembly kodu, dizeler, semboller, çağrılar ve referanslar                                       | Hopper, Ghidra veya IDA; [yerel kod analizi](https://rea.tools/tr/guides/native/)                                                  |
