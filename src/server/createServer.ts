@@ -39,6 +39,7 @@ import {
   type ToolResultDelivery,
 } from "./toolResult.js";
 import { parseMcpResponseBudget } from "../config/mcpResponseBudget.js";
+import { parseMcpToolFamilies } from "../config/mcpToolFamilies.js";
 import {
   COMPACT_INPUT_SCHEMA_BUDGET_BYTES,
   parseMcpInputSchemaProfile,
@@ -250,6 +251,7 @@ const createMcpServer = (
   session: BinarySessionPort | undefined,
   delivery: ToolResultDelivery,
   compactPresentation: CompactInputSchemaPresentation | undefined,
+  advertisedToolFamilies: ReadonlySet<string> | undefined,
 ): EvidenceMcpServer =>
   new EvidenceMcpServer(
     {
@@ -269,6 +271,7 @@ const createMcpServer = (
       : (evidence) => session.recordEvidence(evidence),
     delivery,
     compactPresentation,
+    advertisedToolFamilies,
   );
 
 /**
@@ -330,6 +333,7 @@ export const createServer = (
     session,
     delivery,
     selectCompactInputSchemaPresentation(environment),
+    selectAdvertisedToolFamilies(environment),
   );
   const gdbSessions = new GdbSessionManager({
     environment: providerEnvironment,
@@ -597,6 +601,14 @@ const selectCompactInputSchemaPresentation = (
   return configured.value === "compact"
     ? { budgetBytes: COMPACT_INPUT_SCHEMA_BUDGET_BYTES }
     : undefined;
+};
+
+const selectAdvertisedToolFamilies = (
+  environment: Readonly<NodeJS.ProcessEnv>,
+): ReadonlySet<string> | undefined => {
+  const configured = parseMcpToolFamilies(environment.REA_MCP_TOOL_FAMILIES);
+  if (!configured.ok) throw configured.error;
+  return configured.value === undefined ? undefined : new Set(configured.value);
 };
 
 const registerConfiguredAnalysisTools = (
