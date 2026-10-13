@@ -435,6 +435,71 @@ describe("historical source graph validation", () => {
 });
 
 describe("historical source graph symlink path identity", () => {
+  it("requires directory coverage for descendants but reads legacy exact exclusions", () => {
+    const input = { ...graphInput(), inventory_state: "partial" as const };
+    input.exclusions = [
+      { path: "omitted", reason: "caller-excluded", pattern: "omitted/" },
+    ];
+    input.entries[2] = symlinkEntry({ target: "../omitted/child" });
+    expect(() => createHistoricalSourceGraph(input)).toThrow(
+      /recorded exclusion/u,
+    );
+    input.entries[2] = symlinkEntry({ target: "../omitted" });
+    const legacy = createHistoricalSourceGraph(input);
+    expect(parseHistoricalSourceGraph(legacy)).toEqual(legacy);
+    input.exclusions[0] = {
+      path: "omitted",
+      reason: "caller-excluded",
+      pattern: "omitted/",
+      entry_kind: "directory",
+    };
+    expect(createHistoricalSourceGraph(input).root_sha256).not.toBe(
+      legacy.root_sha256,
+    );
+  });
+
+  it("resolves excluded target paths with Unicode identity and directory boundaries", () => {
+    const input = { ...graphInput(), inventory_state: "partial" as const };
+    input.exclusions = [
+      {
+        path: "café",
+        reason: "caller-excluded",
+        pattern: "café/",
+        entry_kind: "directory",
+      },
+    ];
+    input.entries[2] = symlinkEntry({
+      target: "../cafe\u0301/nested/output.js",
+    });
+    const graph = createHistoricalSourceGraph(input);
+    expect(parseHistoricalSourceGraph(graph)).toEqual(graph);
+    expect(graph.entries[2]).toMatchObject({
+      target: "../cafe\u0301/nested/output.js",
+      target_state: "internal",
+    });
+
+    // An exact recorded exclusion of unknown kind wins over a canonically
+    // equivalent directory spelling; it cannot prove subtree coverage.
+    input.exclusions.push({
+      path: "cafe\u0301",
+      reason: "caller-excluded",
+      pattern: "cafe\u0301",
+    });
+    expect(() => createHistoricalSourceGraph(input)).toThrow(
+      /recorded exclusion/u,
+    );
+    input.exclusions.pop();
+
+    input.entries[2] = symlinkEntry({ target: "../café-other/output.js" });
+    expect(() => createHistoricalSourceGraph(input)).toThrow(
+      /must resolve to an inventoried entry/u,
+    );
+    input.entries[2] = symlinkEntry({ target: "../../café/output.js" });
+    expect(() => createHistoricalSourceGraph(input)).toThrow(
+      /must resolve to an inventoried entry/u,
+    );
+  });
+
   it("joins internal symlink targets with the inventory NFC normalizer", () => {
     // "café" spelled NFC, as the inventory produces it, and the same
     // name spelled NFD, as a macOS readlink can report it.
