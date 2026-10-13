@@ -718,6 +718,31 @@ catalog exactly as before.
 into the `env` object of that client's `rea` entry, so the scope travels with
 the registration; rerunning setup with a different selection refreshes it.
 
+#### Choosing families for common workflows
+
+Every investigation that opens a local binary still needs the `session`
+family: it owns `open_binary`, `binary_session`, the evidence-bundle and
+comparison tools, and the unknown ledger, so include it whenever the workflow
+touches a binary. The `tools.families` entries in the product catalog list
+each family's current inventory; the groupings below describe what a scope
+covers, not a frozen tool count.
+
+| Workflow                                          | Scope                                             | Coverage                                                                                                                                                     |
+| ------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Firmware extraction and analysis                  | `firmware,session,direct`                         | extract firmware regions, open the extracted image, inspect it with the proxied disassembly tools                                                            |
+| Web investigation                                 | `browser,pcap,session,javascript-runtime`         | page, bundle and session inspection, packet captures, JS runtime observation, evidence workflow                                                              |
+| Android application analysis                      | `android,adb,apktool,session`                     | class and method inspection, device bridge, resource decoding; add `frida` for dynamic instrumentation, `jeb` for JEB projects, `flutter` for Flutter builds |
+| Native macOS or iOS binary                        | `native,artifact,session`                         | Mach-O, signature and property-list inspection plus container extraction                                                                                     |
+| Managed .NET assembly                             | `managed,session`                                 | managed member comparison and reconstruction against the evidence workflow                                                                                   |
+| Electron or browser-hosted JavaScript application | `electron,application,javascript-runtime,session` | runtime targets, feature tracing, JavaScript semantics and reconstruction obligations                                                                        |
+| Evidence bookkeeping only                         | `session`                                         | open and close binaries, bundles, comparisons, unknown tracking                                                                                              |
+
+Scopes are additive and start narrow: begin with the families the workflow
+names, then add one when a call fails with the SDK's `Tool ... disabled`
+error. The error names the disabled tool; `tools.families` in the product
+catalog maps it back to the family that would re-enable it, and the server
+restarts with the wider scope through the same setup flag.
+
 ### Output schemas
 
 Self-contained output schemas advertise a content-bound `$id`, including their
