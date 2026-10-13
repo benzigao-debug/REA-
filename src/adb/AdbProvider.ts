@@ -481,10 +481,11 @@ const reservePackageDestinations = async (
  * ADB device inspection and acquisition over a caller-selected adb binary.
  *
  * Every operation composes fixed adb argument vectors: caller values occupy
- * positional arguments, escaped when adb forwards them to the device shell. The provider never
- * starts an emulator, installs platform tools, or drives the device UI; the
- * only device mutation is the caller-requested file push, which requires an
- * explicit overwrite choice and verifies its transfer digest.
+ * positional arguments, escaped when adb forwards them to the device shell.
+ * The provider never starts an emulator, installs platform tools, or drives
+ * the device UI. Some operations mutate device state; a caller-requested file
+ * push requires an explicit overwrite choice and verifies its transfer digest
+ * when the device provides `sha256sum`.
  */
 export class AdbProvider {
   private readonly environment: Readonly<Record<string, string | undefined>>;
@@ -1708,7 +1709,7 @@ export class AdbProvider {
           provider,
           {
             limitations: [
-              "Push writes the caller's file to the device; this is the only device-mutating ADB tool",
+              "Push writes the caller's file to the device, mutating device state",
             ],
           },
         ),
@@ -1731,7 +1732,7 @@ export class AdbProvider {
         {
           limitations: [
             "The device did not answer sha256sum, so the transfer is not device-side verified",
-            "Push writes the caller's file to the device; this is the only device-mutating ADB tool",
+            "Push writes the caller's file to the device, mutating device state",
           ],
         },
       ),
