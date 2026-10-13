@@ -754,8 +754,7 @@ exit 1`,
       overwrite: false,
     },
   });
-  expect(pushed.ok).toBe(true);
-  if (!pushed.ok) throw new Error(pushed.error.message);
+  if (!pushed.ok) throw pushed.error;
   expect(pushed.value.result).toMatchObject({
     bytes: 12,
     sha256: digest,
@@ -787,8 +786,7 @@ exit 1`,
       overwrite: false,
     },
   });
-  expect(pushed.ok).toBe(true);
-  if (!pushed.ok) throw new Error(pushed.error.message);
+  if (!pushed.ok) throw pushed.error;
   expect(pushed.value.result).toMatchObject({
     device_sha256: null,
     device_digest_source: "unavailable",
