@@ -76,6 +76,7 @@ interface BindPatternInput {
   readonly state: JavaScriptSemanticAnalysisState;
   readonly mutable: boolean;
   readonly kind?: JavaScriptSemanticDefinition["kind"];
+  readonly declarationKind?: JavaScriptSemanticDefinition["declarationKind"];
   readonly projection?: readonly (string | number | null)[];
   readonly referenceOnly?: boolean;
   readonly copyKind?: "object-rest" | "array-rest";
@@ -100,6 +101,7 @@ interface AddBindingInput {
   readonly mutable: boolean;
   readonly definitionNode: t.Node;
   readonly initializer: t.Node | null;
+  readonly declarationKind?: JavaScriptSemanticDefinition["declarationKind"];
   readonly directOrigin?: JavaScriptModuleOrigin;
   readonly runtimeImport?: boolean;
   readonly projection?: readonly (string | number | null)[];
@@ -876,6 +878,14 @@ const bindInnerDeclaration = (
         parent !== null && t.isVariableDeclaration(parent)
           ? parent.kind !== "const"
           : true,
+      declarationKind:
+        parent !== null && t.isVariableDeclaration(parent)
+          ? parent.kind === "var" ||
+            parent.kind === "let" ||
+            parent.kind === "const"
+            ? parent.kind
+            : undefined
+          : undefined,
     });
   else if (t.isClassExpression(node) && t.isIdentifier(node.id))
     addBinding({
@@ -1154,6 +1164,7 @@ const bindPattern = (input: BindPatternInput): void => {
     state,
     mutable,
     kind = "variable",
+    declarationKind,
     projection = [],
     referenceOnly = false,
     copyKind,
@@ -1198,6 +1209,7 @@ const bindPattern = (input: BindPatternInput): void => {
       definitionNode: pattern,
       initializer,
       projection,
+      ...(declarationKind === undefined ? {} : { declarationKind }),
     });
     return;
   }
@@ -1299,6 +1311,7 @@ const addBinding = (input: AddBindingInput): void => {
     mutable,
     definitionNode,
     initializer,
+    declarationKind,
     directOrigin,
     runtimeImport,
     projection = [],
@@ -1311,7 +1324,11 @@ const addBinding = (input: AddBindingInput): void => {
     state.bindingsById.set(binding.bindingId, binding);
   }
   binding.mutable ||= mutable;
-  binding.definitions.push({ kind, location: range(definitionNode) });
+  binding.definitions.push({
+    kind,
+    location: range(definitionNode),
+    ...(declarationKind === undefined ? {} : { declarationKind }),
+  });
   if (initializer !== null)
     binding.initializers.push({ node: initializer, projection });
   if (directOrigin !== undefined)
