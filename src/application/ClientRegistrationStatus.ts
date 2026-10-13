@@ -432,13 +432,12 @@ const clientEvidencePresent = async (
   client: SetupClient,
   evidence: { readonly selected: boolean; readonly ownership: boolean },
 ): Promise<boolean> => {
+  // An explicit selection authorises the read outright: the caller named this
+  // client, so an unreadable config must surface as unreadable instead of
+  // collapsing to absence. The probes below serve automatic discovery only.
+  if (evidence.selected) return true;
   const paths = [
     ...clientEvidencePaths(client),
-    // An explicit selection is its own evidence: the caller named this client,
-    // so its configured location counts even without product detection.
-    ...(evidence.selected
-      ? [client.configPath, ...(client.configPaths ?? [])]
-      : []),
     ...(evidence.ownership ? clientOwnershipEvidencePaths(client) : []),
   ];
   for (const path of paths) if (await exists(path)) return true;
