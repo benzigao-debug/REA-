@@ -257,7 +257,12 @@ const registrationActivation = (
   (client.format !== "grok" && registration.disabled === true) ||
   (registration.enabled === false &&
     !clientServerForcedEnabled(parsed, PRODUCT_IDENTITY.mcpServerKey)) ||
-  (client.format === "zcode" && registration.enable === false) ||
+  // Shared registration storage doubles as ZCode's fallback, so its
+  // `enable: false` activation fact binds every reader of that storage.
+  // Maintenance must not drop the flag by rewriting the row as another
+  // product's registration and silently re-enabling it.
+  ((client.format === "zcode" || client.sharedRegistration === true) &&
+    registration.enable === false) ||
   clientServerListedDisabled(parsed, PRODUCT_IDENTITY.mcpServerKey)
     ? "disabled"
     : "enabled";

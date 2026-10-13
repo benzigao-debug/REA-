@@ -353,6 +353,29 @@ describe("shared registration maintenance", () => {
       skillDestinations: [],
     });
   });
+
+  it("leaves a ZCode-disabled shared row out of maintenance", async () => {
+    // The shared file doubles as ZCode's fallback, where `enable: false`
+    // disables the registration. Ownership evidence must not let maintenance
+    // rewrite the row as a FreeBuff registration and drop that flag.
+    const configPath = await writeClient(
+      "freebuff",
+      JSON.stringify({
+        mcpServers: {
+          rea: { command: entryPoint, args: ["mcp"], enable: false },
+        },
+      }),
+    );
+    const original = await readFile(configPath, "utf8");
+    await expect(
+      existingMaintenanceScope(home, entryPoint, process.env),
+    ).resolves.toEqual({
+      clients: [],
+      skill: false,
+      skillDestinations: [],
+    });
+    expect(await readFile(configPath, "utf8")).toBe(original);
+  });
 });
 
 describe("updated executable maintenance planning", () => {
