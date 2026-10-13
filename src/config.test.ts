@@ -1,6 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { parseConfig } from "./config/parseConfig.js";
+import {
+  defaultHopperLauncherPath,
+  executableAvailable,
+  parseConfig,
+} from "./config/parseConfig.js";
 import { projectAnalysisError } from "./domain/analysisErrorProjection.js";
 
 it("reports a configuration failure for a NUL in Hopper loader arguments", () => {
@@ -324,3 +338,78 @@ describe("configuration failure diagnostics", () => {
       });
   });
 });
+
+describe("default Hopper launcher path (#2270)", () => {
+  const home = "/fixture/home";
+  const executable = (present: readonly string[]) => (path: string) =>
+    present.includes(path);
+
+  it("selects each newly discovered Linux launcher when it is the only one present", () => {
+    for (const candidate of ["/opt/hopper-v4/bin/hopper", "/usr/bin/hopper"]) {
+      expect(
+        defaultHopperLauncherPath("linux", home, executable([candidate])),
+      ).toBe(candidate);
+    }
+  });
+
+  it("prefers the REA-managed install over the newly discovered launchers", () => {
+    expect(
+      defaultHopperLauncherPath(
+        "linux",
+        home,
+        executable([
+          "/opt/hopper/bin/Hopper",
+          "/opt/hopper-v4/bin/hopper",
+          "/usr/bin/hopper",
+        ]),
+      ),
+    ).toBe("/opt/hopper/bin/Hopper");
+  });
+
+  it("falls back to the user-local launcher, then the REA-managed path", () => {
+    const userLocal = `${home}/.local/share/rea/hopper/bin/Hopper`;
+    expect(
+      defaultHopperLauncherPath("linux", home, executable([userLocal])),
+    ).toBe(userLocal);
+    expect(defaultHopperLauncherPath("linux", home, executable([]))).toBe(
+      "/opt/hopper/bin/Hopper",
+    );
+  });
+});
+
+describe.runIf(process.platform === "linux")(
+  "Hopper launcher readiness probe (#2995)",
+  () => {
+    // Fixtures for the default readiness probe: execute access alone is not
+    // readiness. A directory passes X_OK but is not a launcher, and a script
+    // fails the ldd leg that doctor discovery also requires.
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "rea-hopper-probe-"));
+    afterAll(() => {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    });
+
+    const asDirectory = join(fixtureRoot, "hopper-dir");
+    mkdirSync(asDirectory, { recursive: true });
+    chmodSync(asDirectory, 0o755);
+
+    const brokenScript = join(fixtureRoot, "broken.sh");
+    writeFileSync(brokenScript, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+    const healthyBinary = join(fixtureRoot, "hopper-ok");
+    copyFileSync("/bin/true", healthyBinary);
+    chmodSync(healthyBinary, 0o755);
+
+    it("rejects directories and launchers with unresolvable libraries", () => {
+      expect(executableAvailable(asDirectory)).toBe(false);
+      expect(executableAvailable(brokenScript)).toBe(false);
+    });
+
+    it("accepts a healthy executable binary", () => {
+      expect(executableAvailable(healthyBinary)).toBe(true);
+    });
+
+    it("rejects missing paths", () => {
+      expect(executableAvailable(join(fixtureRoot, "missing"))).toBe(false);
+    });
+  },
+);
