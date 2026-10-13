@@ -33,6 +33,12 @@ export interface SetupClient {
   readonly markerPath?: string;
   /** Product-specific applicability evidence when configuration storage is shared. */
   readonly discoveryPaths?: readonly string[];
+  /**
+   * Registration storage shared with other products. Its presence never proves
+   * this product is installed; only a recognizable REA-owned row in it proves
+   * ownership of a registration REA wrote.
+   */
+  readonly sharedRegistration?: boolean;
   /** MSIX package storage that decides which configuration the client reads. */
   readonly msixPackage?: MsixPackageView;
   /** A running client can rewrite its configuration from memory. */
@@ -98,6 +104,7 @@ interface ClientDefinitionBase {
   readonly name: string;
   readonly displayName: string;
   readonly discoveryPaths?: (context: ClientPathContext) => readonly string[];
+  readonly sharedRegistration?: true;
   readonly format: NonNullable<SetupClient["format"]>;
   readonly quitBeforeSetup?: boolean;
   readonly zcodeFallbackPath?: (context: ClientPathContext) => string;
@@ -710,6 +717,9 @@ export const SUPPORTED_CLIENT_DEFINITIONS = [
     discoveryPaths: (context: ClientPathContext) => [
       freebuffProfileDirectory(context),
     ],
+    // The same file doubles as ZCode's user-scope fallback, so its presence
+    // proves neither product is installed; see clientOwnershipEvidencePaths.
+    sharedRegistration: true,
     format: "json",
   },
   {
@@ -722,9 +732,11 @@ export const SUPPORTED_CLIENT_DEFINITIONS = [
 ] as const satisfies readonly ClientDefinition[];
 
 /**
- * Paths whose presence means doctor and setup should inspect the client.
- * Layered sources count: OpenCode still loads its XDG files when a custom
- * directory override does not exist.
+ * Paths whose presence means the product itself is applicable, so doctor and
+ * setup should inspect the client. Layered sources count: OpenCode still loads
+ * its XDG files when a custom directory override does not exist. Shared
+ * registration storage never establishes applicability; see
+ * {@link clientOwnershipEvidencePaths}.
  */
 export const clientEvidencePaths = (
   client: Pick<
@@ -742,6 +754,24 @@ export const clientEvidencePaths = (
     ).filter((path): path is string => path !== undefined && path.length > 0),
   ),
 ];
+
+/**
+ * Paths where a recognizable REA-owned row proves ownership of a registration
+ * REA wrote, never that the product is installed: shared storage is created by
+ * other products and by REA's own skill installs. A client whose registration
+ * is product-local declares no shared storage, so this stays empty for it.
+ */
+export const clientOwnershipEvidencePaths = (
+  client: Pick<
+    SetupClient,
+    "configPath" | "configPaths" | "sharedRegistration"
+  >,
+): readonly string[] =>
+  client.sharedRegistration === true
+    ? [client.configPath, ...(client.configPaths ?? [])].filter(
+        (path): path is string => path !== undefined && path.length > 0,
+      )
+    : [];
 
 const resolvePath = (
   path: ClientPath,
@@ -810,6 +840,9 @@ export const supportedClients = (
         ...(definition.discoveryPaths === undefined
           ? {}
           : { discoveryPaths: definition.discoveryPaths(context) }),
+        ...(definition.sharedRegistration === true
+          ? { sharedRegistration: true }
+          : {}),
         format: definition.format,
       };
     } catch (cause: unknown) {

@@ -315,6 +315,46 @@ describe("existing REA integration maintenance", () => {
   });
 });
 
+describe("shared registration maintenance", () => {
+  it("refreshes an owned shared registration without its product profile", async () => {
+    // FreeBuff's registration lives in the shared user agents file. The row is
+    // owned, so maintenance must refresh it even though no FreeBuff profile
+    // exists to establish product applicability.
+    await writeClient(
+      "freebuff",
+      JSON.stringify({
+        mcpServers: {
+          other: { command: "other-server" },
+          rea: { command: entryPoint, args: ["mcp"] },
+        },
+      }),
+    );
+    await expect(
+      existingMaintenanceScope(home, entryPoint, process.env),
+    ).resolves.toEqual({
+      clients: ["freebuff"],
+      skill: false,
+      skillDestinations: [],
+    });
+  });
+
+  it("leaves a foreign shared registration out of maintenance", async () => {
+    await writeClient(
+      "freebuff",
+      JSON.stringify({
+        mcpServers: { rea: { command: "foreign-server", args: [] } },
+      }),
+    );
+    await expect(
+      existingMaintenanceScope(home, entryPoint, process.env),
+    ).resolves.toEqual({
+      clients: [],
+      skill: false,
+      skillDestinations: [],
+    });
+  });
+});
+
 describe("updated executable maintenance planning", () => {
   it("runs real setup as a noninteractive dry run and creates no new integrations or backups", async () => {
     const configPath = await writeClient("codex", staleCodex);

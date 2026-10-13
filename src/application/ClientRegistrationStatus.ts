@@ -22,6 +22,7 @@ import {
 } from "./ClientRegistrationIdentity.js";
 import {
   clientEvidencePaths,
+  clientOwnershipEvidencePaths,
   manualRegistrationRemediation,
   supportedClients,
 } from "./SupportedClients.js";
@@ -82,6 +83,14 @@ interface ClientRegistrationReadOptions {
   readonly environment?: NodeJS.ProcessEnv;
   readonly resources?: ArtifactResourceScope;
   readonly selectedClientIds?: readonly string[];
+  /**
+   * Which evidence authorises inspection. `readiness` inspects a client whose
+   * product applicability is established, plus clients the caller selected
+   * explicitly. `ownership` also inspects shared registration storage, because
+   * a version-pinned registration REA wrote must be refreshed even when the
+   * product profile is absent.
+   */
+  readonly evidence?: "readiness" | "ownership";
 }
 
 /** Registration facts shared by diagnostics and update maintenance. */
@@ -129,7 +138,13 @@ export const readClientRegistrationInspections = async (
       });
       continue;
     }
-    if (!(await clientEvidencePresent(client, selected))) continue;
+    if (
+      !(await clientEvidencePresent(client, {
+        selected,
+        ownership: options.evidence === "ownership",
+      }))
+    )
+      continue;
     const manualRemediation = manualRegistrationRemediation(client.name);
     if (client.format === "unsupported") {
       if (manualRemediation !== undefined)
@@ -410,15 +425,17 @@ const unavailableStatus = (
 
 const clientEvidencePresent = async (
   client: SetupClient,
-  selected: boolean,
+  evidence: { readonly selected: boolean; readonly ownership: boolean },
 ): Promise<boolean> => {
-  const paths = selected
-    ? [
-        ...clientEvidencePaths(client),
-        client.configPath,
-        ...(client.configPaths ?? []),
-      ]
-    : clientEvidencePaths(client);
+  const paths = [
+    ...clientEvidencePaths(client),
+    // An explicit selection is its own evidence: the caller named this client,
+    // so its configured location counts even without product detection.
+    ...(evidence.selected
+      ? [client.configPath, ...(client.configPaths ?? [])]
+      : []),
+    ...(evidence.ownership ? clientOwnershipEvidencePaths(client) : []),
+  ];
   for (const path of paths) if (await exists(path)) return true;
   return false;
 };

@@ -8,7 +8,11 @@ import { npxRegistrationCommand } from "../../../src/application/ClientRegistrat
 import { configureClientConfiguration } from "../../../src/application/SetupClientConfiguration.js";
 import { detectClients } from "../../../src/application/SetupHost.js";
 import { skillDestinations } from "../../../src/application/SetupSkill.js";
-import { supportedClients } from "../../../src/application/SupportedClients.js";
+import {
+  clientEvidencePaths,
+  clientOwnershipEvidencePaths,
+  supportedClients,
+} from "../../../src/application/SupportedClients.js";
 import {
   runUninstall,
   systemUninstallHost,
@@ -40,6 +44,7 @@ describe("FreeBuff configuration paths", () => {
       configPath: join("/home/a", ".agents", "mcp.json"),
       markerPath: join("/home/a", ".config", "freebuff-desktop"),
       discoveryPaths: [join("/home/a", ".config", "freebuff-desktop")],
+      sharedRegistration: true,
       format: "json",
     });
     expect(freebuffPath("/Users/a", "darwin")?.markerPath).toBe(
@@ -76,6 +81,14 @@ describe("FreeBuff configuration paths", () => {
     expect((await detectClients(home)).map(({ name }) => name)).toContain(
       "freebuff",
     );
+  });
+
+  it("keeps shared registration storage out of applicability evidence", () => {
+    for (const client of supportedClients("/home/a", "linux", {})) {
+      if (client.sharedRegistration !== true) continue;
+      expect(clientEvidencePaths(client)).not.toContain(client.configPath);
+      expect(clientOwnershipEvidencePaths(client)).toContain(client.configPath);
+    }
   });
 
   it("shares the user-scope file ZCode loads as its fallback", () => {
