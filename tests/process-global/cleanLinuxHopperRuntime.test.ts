@@ -34,6 +34,10 @@ it
     const procRoot = join(directory, "proc");
     await mkdir(procRoot);
     const alternateMode = mode === "alternate launcher";
+    let orphanPid: number | undefined;
+    const isolatedProcessList = async () => ({
+      stdout: alternateMode || orphanPid === undefined ? "" : "Xvfb",
+    });
     if (alternateMode) {
       await copyFile("/usr/bin/sleep", launcher);
       await chmod(launcher, 0o700);
@@ -47,6 +51,7 @@ it
     await assertCleanLinuxHopperRuntime(
       alternateMode ? [launcher] : [],
       procRoot,
+      isolatedProcessList,
     );
     const command = alternateMode ? alternate : process.execPath;
     const arguments_ = alternateMode ? ["30"] : ["-e", childCode];
@@ -69,7 +74,6 @@ it
     const parentPid = parent.child.pid;
     if (parentPid === undefined)
       throw new Error("Fixture parent did not spawn");
-    let orphanPid: number | undefined;
     try {
       const { stdout } = await parent;
       const { pid } = JSON.parse(stdout) as { pid: number };
@@ -115,6 +119,7 @@ it
         assertCleanLinuxHopperRuntime(
           alternateMode ? [launcher] : [],
           procRoot,
+          isolatedProcessList,
         ),
       ).rejects.toThrow("Clean Linux runner retained a Hopper demo process");
       // Observation must not terminate the fixture, even though it resembles Xvfb.
