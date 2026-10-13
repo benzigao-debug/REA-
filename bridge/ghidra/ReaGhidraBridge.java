@@ -118,6 +118,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
     private static final int MAX_HIGH_PCODE_OPS = 3000;
     private static final int MAX_HIGH_PCODE_INPUTS_PER_OP = 64;
     private static final int MAX_HIGH_PCODE_DEF_USE_EDGES = 12000;
+    // Instructions retained behind the SEH triple window: the xor reg,reg that
+    // proves an fs:[reg] slot is FS:[0] sits a few instructions before the
+    // prologue (for example "xor eax,eax; push ebp; push imm32").
+    private static final int SEH_HISTORY_LIMIT = 12;
     private static final Gson GSON = new GsonBuilder().serializeNulls().create();
     private final Map<FileBytes, Boolean> targetSourceIdentity = new IdentityHashMap<>();
     private String admittedTargetSha256;
@@ -883,8 +887,9 @@ public final class ReaGhidraBridge extends HeadlessScript {
             String value = decompiledText(decompile(function));
             JsonObject result = functionObservation(
                 value == null ? JsonNull.INSTANCE : GSON.toJsonTree(value),
-                noReturnCallLimitations(
-                    currentProgram.getListing().getInstructions(function.getBody(), true)
+                functionBoundaryLimitations(
+                    currentProgram.getListing().getInstructions(function.getBody(), true),
+                    function
                 )
             );
             if (selection.size() > 0) result.add("selection", selection);
@@ -975,7 +980,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         InstructionScan scan = scanInstructions(function, Integer.MAX_VALUE);
         return functionObservation(
             GSON.toJsonTree(renderAssembly(scan.instructions)),
-            noReturnCallLimitations(scan.instructions)
+            functionBoundaryLimitations(scan.instructions, function)
         );
     }
 
@@ -994,7 +999,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         limitations.add(
             "The fast path does not invoke the decompiler or scan whole-program names and strings."
         );
-        List<String> boundaryLimitations = noReturnCallLimitations(scan.instructions);
+        List<String> boundaryLimitations = functionBoundaryLimitations(scan.instructions, function);
         for (String limitation : boundaryLimitations) limitations.add(limitation);
         JsonObject result = new JsonObject();
         result.add("procedure", procedureIdentity(function));
@@ -1018,8 +1023,9 @@ public final class ReaGhidraBridge extends HeadlessScript {
         }
         return functionObservation(
             result,
-            noReturnCallLimitations(
-                currentProgram.getListing().getInstructions(function.getBody(), true)
+            functionBoundaryLimitations(
+                currentProgram.getListing().getInstructions(function.getBody(), true),
+                function
             )
         );
     }
@@ -1040,8 +1046,9 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.add("classification", functionClassification(function));
         return functionObservation(
             result,
-            noReturnCallLimitations(
-                currentProgram.getListing().getInstructions(function.getBody(), true)
+            functionBoundaryLimitations(
+                currentProgram.getListing().getInstructions(function.getBody(), true),
+                function
             )
         );
     }
@@ -1084,7 +1091,13 @@ public final class ReaGhidraBridge extends HeadlessScript {
             }
         }
         result.add("unresolved_calls", unresolvedCalls);
-        return result;
+        return functionObservation(
+            result,
+            functionBoundaryLimitations(
+                currentProgram.getListing().getInstructions(function.getBody(), true),
+                function
+            )
+        );
     }
 
     private JsonObject inspectNativeDataType(JsonObject params) throws Exception {
@@ -1563,7 +1576,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 "Swift String literal decoding is implemented for AArch64 register pairs only; no Swift literals were decoded for this architecture."
             );
         }
-        List<String> boundaryLimitations = noReturnCallLimitations(scan.instructions);
+        List<String> boundaryLimitations = functionBoundaryLimitations(scan.instructions, function);
         for (String limitation : boundaryLimitations) {
             limitations.add(limitation);
         }
@@ -3281,47 +3294,336 @@ public final class ReaGhidraBridge extends HeadlessScript {
         List<String> limitations = new ArrayList<>();
         for (Instruction instruction : instructions) {
             monitor.checkCancelled();
-            if (!instruction.getFlowType().isCall() || !instruction.getFlowType().isTerminal()) {
-                continue;
-            }
-            Address[] destinations = instruction.getFlows();
-            StringBuilder limitation = new StringBuilder();
-            limitation.append("Ghidra Listing reports a terminal call at ")
-                .append(canonicalAddress(instruction.getAddress()));
-            if (destinations.length == 0) {
-                limitation.append(" with no resolved callee; its no-return basis is unknown.");
-            }
-            else {
-                limitation.append(" to ");
-                for (int index = 0; index < destinations.length; index++) {
-                    if (index > 0) limitation.append(", ");
-                    Address destination = destinations[index];
-                    limitation.append(canonicalAddress(destination));
-                    Function target = currentProgram.getFunctionManager().getFunctionAt(destination);
-                    if (target == null) {
-                        limitation.append(" (callee identity unknown)");
-                    }
-                    else {
-                        limitation.append(" ").append(procedureName(target));
-                        limitation.append(" (external=").append(target.isExternal());
-                        limitation.append(", thunk=").append(target.isThunk());
-                        limitation.append(", hasNoReturn=").append(target.hasNoReturn()).append(")");
-                    }
-                }
-                limitation.append("; fallthrough is excluded by Ghidra's flow model.");
-                Function target = destinations.length == 1
-                    ? currentProgram.getFunctionManager().getFunctionAt(destinations[0])
-                    : null;
-                if (target != null && target.hasNoReturn()) {
-                    limitation.append(" This records Ghidra's FunctionManager flag, not an independent verification that the callee cannot return.");
-                }
-                else {
-                    limitation.append(" The reason for the terminal flow is not established by this observation.");
-                }
-            }
-            limitations.add(limitation.toString());
+            noReturnCallLimitation(instruction, limitations);
         }
         return limitations;
+    }
+
+    private void noReturnCallLimitation(Instruction instruction, List<String> limitations)
+            throws Exception {
+        if (!instruction.getFlowType().isCall() || !instruction.getFlowType().isTerminal()) {
+            return;
+        }
+        Address[] destinations = instruction.getFlows();
+        StringBuilder limitation = new StringBuilder();
+        limitation.append("Ghidra Listing reports a terminal call at ")
+            .append(canonicalAddress(instruction.getAddress()));
+        if (destinations.length == 0) {
+            limitation.append(" with no resolved callee; its no-return basis is unknown.");
+        }
+        else {
+            limitation.append(" to ");
+            for (int index = 0; index < destinations.length; index++) {
+                if (index > 0) limitation.append(", ");
+                Address destination = destinations[index];
+                limitation.append(canonicalAddress(destination));
+                Function target = currentProgram.getFunctionManager().getFunctionAt(destination);
+                if (target == null) {
+                    limitation.append(" (callee identity unknown)");
+                }
+                else {
+                    limitation.append(" ").append(procedureName(target));
+                    limitation.append(" (external=").append(target.isExternal());
+                    limitation.append(", thunk=").append(target.isThunk());
+                    limitation.append(", hasNoReturn=").append(target.hasNoReturn()).append(")");
+                }
+            }
+            limitation.append("; fallthrough is excluded by Ghidra's flow model.");
+            Function target = destinations.length == 1
+                ? currentProgram.getFunctionManager().getFunctionAt(destinations[0])
+                : null;
+            if (target != null && target.hasNoReturn()) {
+                limitation.append(" This records Ghidra's FunctionManager flag, not an independent verification that the callee cannot return.");
+            }
+            else {
+                limitation.append(" The reason for the terminal flow is not established by this observation.");
+            }
+        }
+        limitations.add(limitation.toString());
+    }
+
+    private List<String> functionBoundaryLimitations(
+            Iterable<Instruction> instructions, Function function) throws Exception {
+        List<String> limitations = new ArrayList<>();
+        List<Instruction> history = new ArrayList<>();
+        Instruction windowFirst = null;
+        Instruction windowSecond = null;
+        // Target eligibility is function-invariant; computing it once avoids a
+        // language-ID split and format lookup per three-instruction window.
+        boolean win32SehTarget = isWin32SehTarget();
+        for (Instruction instruction : instructions) {
+            monitor.checkCancelled();
+            noReturnCallLimitation(instruction, limitations);
+            history.add(instruction);
+            if (history.size() > SEH_HISTORY_LIMIT) {
+                history.remove(0);
+            }
+            if (windowFirst != null && windowSecond != null) {
+                sehHandlerLimitation(
+                        windowFirst, windowSecond, instruction, history, function, limitations,
+                        win32SehTarget);
+            }
+            windowFirst = windowSecond;
+            windowSecond = instruction;
+        }
+        return limitations;
+    }
+
+    /**
+     * Reports Win32 SEH handler registrations (inferred Borland/Delphi
+     * codegen) whose handler address falls outside the function's analyzed
+     * body. Ghidra only reaches the handler through the SEH chain, so
+     * callees, strings, and references below silently omit the handler region
+     * unless the reader is warned.
+     */
+    private void sehHandlerLimitation(
+            Instruction pushImmediate,
+            Instruction pushSegment,
+            Instruction moveSegment,
+            List<Instruction> history,
+            Function function,
+            List<String> limitations,
+            boolean win32SehTarget) throws Exception {
+        Address handler = sehHandlerAddress(
+            pushImmediate, pushSegment, moveSegment, history, win32SehTarget);
+        if (handler == null || function.getBody().contains(handler)) {
+            return;
+        }
+        limitations.add(
+            "Ghidra Listing shows a Win32 SEH frame registration (inferred Borland/Delphi codegen) at "
+                + canonicalAddress(pushImmediate.getAddress())
+                + " (push "
+                + canonicalAddress(handler)
+                + " followed by fs-segment stack chaining); the handler "
+                + canonicalAddress(handler)
+                + " lies outside this procedure's body, so callees, strings, and cross-references may omit the handler region.");
+    }
+
+    /**
+     * Matches the Win32 SEH prologue triple {@code push imm32;
+     * push fs:[slot]; mov fs:[slot], esp} — the Borland/Delphi codegen idiom —
+     * and returns the registered handler address, or null when the three
+     * instructions do not form the pattern.
+     * The pattern is defined for 32-bit x86 protected mode (FS:[0] chains the
+     * Win32 thread-information block), so anything else — including 16-bit
+     * x86, where an operand-size prefix still yields a 32-bit immediate — is
+     * reported as no registration. The triple must be address-consecutive and
+     * chain the FS:[0] exception-list head: a literal zero in any spelling
+     * Ghidra renders ({@code fs:[0]}, {@code fs:[0x0]}) or a register proven
+     * zero by a preceding {@code xor reg,reg} with no intervening writer on
+     * a singly-entered straight-line path. Any
+     * other slot (for example the FS:[0x18] TEB self-pointer) is not an SEH
+     * registration; anything looser is reported as no registration rather than
+     * risk a misleading handler warning.
+     *
+     * @param history scanned instructions ending with the prologue triple
+     *     itself; only the instructions before the triple prove the slot
+     */
+    private Address sehHandlerAddress(
+            Instruction pushImmediate,
+            Instruction pushSegment,
+            Instruction moveSegment,
+            List<Instruction> history,
+            boolean win32SehTarget) {
+        if (!win32SehTarget
+                || !isPushMnemonic(pushImmediate)
+                || pushImmediate.getNumOperands() != 1
+                || !isFsSegmentPush(pushSegment)
+                || !isFsSegmentMove(moveSegment)
+                || !consecutiveInstructions(pushImmediate, pushSegment)
+                || !consecutiveInstructions(pushSegment, moveSegment)) {
+            return null;
+        }
+        String pushSlot = fsSegmentSlot(pushSegment, 0);
+        if (pushSlot == null
+                || !pushSlot.equals(fsSegmentSlot(moveSegment, 0))
+                || !isFsZeroSlot(pushSlot, history)) {
+            return null;
+        }
+        Object[] operands = pushImmediate.getOpObjects(0);
+        if (operands.length != 1
+                || !(operands[0] instanceof Scalar scalar)
+                || scalar.bitLength() != 32) {
+            return null;
+        }
+        // Resolve the handler through the operand's own references when they
+        // exist: the reference target carries the true address space, while
+        // the instruction's space is only a fallback guess.
+        return sehHandlerTarget(pushImmediate, scalar.getUnsignedValue());
+    }
+
+    /**
+     * Resolves a pushed handler immediate to an address, preferring the
+     * immediate operand's Ghidra reference target (which carries the true
+     * address space) over the instruction's own space. Returns null when
+     * references disagree, so an ambiguous target is never manufactured into
+     * a definite handler address.
+     */
+    private static Address sehHandlerTarget(Instruction pushImmediate, long value) {
+        Address target = null;
+        for (Reference reference : pushImmediate.getOperandReferences(0)) {
+            Address candidate = reference.getToAddress();
+            if (candidate.getOffset() != value) {
+                continue;
+            }
+            if (target != null && !target.equals(candidate)) {
+                return null;
+            }
+            target = candidate;
+        }
+        return target != null
+            ? target
+            : pushImmediate.getAddress().getAddressSpace().getAddress(value);
+    }
+
+    /**
+     * Reports whether the analyzed program can carry a Win32 SEH
+     * registration: 32-bit x86 code in a Portable Executable, where FS:[0]
+     * chains the Win32 thread-information block. Ghidra language IDs carry the
+     * address size as the third colon-separated field (for example {@code
+     * x86:LE:32:default}), which excludes 16-bit and 64-bit x86 inputs without
+     * relying on operand shapes that prefixes can distort — but the same
+     * language ID also covers 32-bit ELF and raw images, where FS:[0] is not
+     * an SEH chain, so the executable format must name the PE loader too.
+     */
+    private boolean isWin32SehTarget() {
+        String[] fields = currentProgram.getLanguageID().getIdAsString().split(":");
+        return fields.length > 2
+            && fields[0].equals("x86")
+            && fields[2].equals("32")
+            && currentProgram.getExecutableFormat().equals("Portable Executable (PE)");
+    }
+
+    private static boolean consecutiveInstructions(Instruction first, Instruction second) {
+        return second.getAddress().getOffset()
+            == first.getAddress().getOffset() + first.getLength();
+    }
+
+    /**
+     * Extracts the normalized {@code fs:[slot]} text from an operand
+     * representation, or null when the operand does not address the FS segment.
+     */
+    private static String fsSegmentSlot(Instruction instruction, int operandIndex) {
+        String representation = instruction.getDefaultOperandRepresentation(operandIndex)
+            .toLowerCase(Locale.ROOT);
+        int start = representation.indexOf("fs:");
+        if (start < 0) {
+            return null;
+        }
+        int end = representation.indexOf(']', start);
+        return end < 0 ? representation.substring(start) : representation.substring(start, end + 1);
+    }
+
+    /**
+     * Reports whether an {@code fs:[slot]} operand addresses the FS:[0]
+     * exception-list head: a literal zero in any spelling Ghidra renders
+     * ({@code fs:[0]}, {@code fs:[0x0]}) or a register proven zero by a
+     * preceding {@code xor reg,reg}. The history tail holds the prologue triple
+     * itself, so only the instructions before it are examined. Anything else —
+     * including the FS:[0x18] TEB self-pointer — is not an SEH registration.
+     */
+    private boolean isFsZeroSlot(String slot, List<Instruction> history) {
+        if (!slot.startsWith("fs:[") || !slot.endsWith("]") || slot.length() <= 5) {
+            return false;
+        }
+        String inner = slot.substring(4, slot.length() - 1);
+        try {
+            return parseInteger(inner) == 0;
+        } catch (NumberFormatException notNumeric) {
+            return inner.matches("[a-z][a-z0-9]*") && isZeroedByXor(history, inner);
+        }
+    }
+
+    /**
+     * Reports whether {@code register}'s latest writer in {@code history}
+     * (whose tail is the SEH prologue triple) is {@code xor reg,reg}, proving
+     * the register holds zero when the triple executes. Scanning stops at any
+     * control-flow instruction — address order is not execution order, so a
+     * branch between the xor and the triple means the xor may never have run.
+     * The triple must also be singly entered: an incoming flow edge to the
+     * triple from outside the straight-line path (a branch into it, a loop
+     * back-edge) means the xor may have been bypassed on the triple's actual
+     * path, so the register is not proven zero.
+     */
+    private boolean isZeroedByXor(List<Instruction> history, String register) {
+        String target = normalizedRegister(register);
+        for (int index = history.size() - 4; index >= 0; index -= 1) {
+            Instruction candidate = history.get(index);
+            FlowType flow = candidate.getFlowType();
+            if (flow.isCall() || flow.isJump() || flow.isTerminal()) {
+                return false;
+            }
+            boolean writes = false;
+            for (Object result : candidate.getResultObjects()) {
+                if (result instanceof Register written
+                        && normalizedRegister(written.getBaseRegister().getName()).equals(target)) {
+                    writes = true;
+                    break;
+                }
+            }
+            if (!writes) {
+                continue;
+            }
+            return isXorSelf(candidate, target) && tripleSingleEntry(history);
+        }
+        return false;
+    }
+
+    /**
+     * Reports whether the prologue triple at the history tail is entered only
+     * through straight-line flow. Ghidra records explicit flow edges
+     * (branches, calls) as references but not the implicit fall-through from
+     * the previous instruction, so any incoming flow reference to the
+     * triple's first address is a second entry that can bypass the zeroing
+     * xor — the same single-entry idiom the jump-table recovery below relies
+     * on.
+     */
+    private boolean tripleSingleEntry(List<Instruction> history) {
+        Address tripleStart = history.get(history.size() - 3).getAddress();
+        for (Reference reference :
+                currentProgram.getReferenceManager().getReferencesTo(tripleStart)) {
+            if (reference.getReferenceType().isFlow()) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isXorSelf(Instruction instruction, String register) {
+        if (!mnemonic(instruction).equals("XOR") || instruction.getNumOperands() != 2) {
+            return false;
+        }
+        Object[] first = instruction.getOpObjects(0);
+        Object[] second = instruction.getOpObjects(1);
+        return first.length == 1
+                && second.length == 1
+                && first[0] instanceof Register firstRegister
+                && second[0] instanceof Register secondRegister
+                && normalizedRegister(firstRegister.getName()).equals(register)
+                && normalizedRegister(secondRegister.getName()).equals(register);
+    }
+
+    private boolean isPushMnemonic(Instruction instruction) {
+        return instruction.getMnemonicString().equalsIgnoreCase("PUSH");
+    }
+
+    private boolean isFsSegmentPush(Instruction instruction) {
+        return isPushMnemonic(instruction)
+            && instruction.getNumOperands() == 1
+            && instruction.getDefaultOperandRepresentation(0).toLowerCase(Locale.ROOT).contains("fs:");
+    }
+
+    private boolean isFsSegmentMove(Instruction instruction) {
+        if (!instruction.getMnemonicString().equalsIgnoreCase("MOV")
+                || instruction.getNumOperands() != 2
+                || !instruction.getDefaultOperandRepresentation(0)
+                    .toLowerCase(Locale.ROOT).contains("fs:")) {
+            return false;
+        }
+        Object[] source = instruction.getOpObjects(1);
+        return source.length == 1
+            && source[0] instanceof Register register
+            && register.getName().equalsIgnoreCase("ESP");
     }
 
     private static String renderAssembly(List<Instruction> instructions) {
