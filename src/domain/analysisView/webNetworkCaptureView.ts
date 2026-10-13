@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { analysisInputErrorFromIssues } from "../inputIssueProjection.js";
@@ -62,12 +63,196 @@ const object = (
     ? value
     : null;
 
+const HEADLINE_FIELDS = [
+  "method",
+  "url",
+  "httpVersion",
+  "http_version",
+  "status",
+  "statusText",
+  "reason",
+];
+// Native mitmproxy flows report the request target in parts and the status
+// as status_code. They are previewed only for mitmproxy records and only when
+// each value has its field's well-formed shape, which also bounds the
+// serialized size of every record (at most ~4 KiB for an escape-heavy path).
+// The path must be origin or asterisk form without control characters and
+// without any "@": native redaction misses absolute and ambiguous spellings,
+// and URL parsing can fail before it recognises their userinfo, so a preview
+// fails closed on the marker every userinfo needs. Host and authority never
+// carry a userinfo marker either.
+// Target fields come only from the request and the status only from the
+// response, and integer slots require the producer's own integer type.
+// Excluded values stay in complete record pages.
+const MITMPROXY_HEADLINE_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  request: ["scheme", "host", "port", "authority", "path"],
+  response: ["status_code"],
+};
+const MITMPROXY_PATH_MAX_LENGTH = 2 * 1024;
+const integerIn = (value: JsonValue, min: number, max: number): boolean =>
+  typeof value === "number" &&
+  Number.isInteger(value) &&
+  value >= min &&
+  value <= max;
+/** True when a code unit is C0, DEL or (optionally) a space. */
+const hasControl = (value: string, includeSpace: boolean): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f || (includeSpace && code === 0x20))
+      return true;
+  }
+  return false;
+};
+const hostLike = (value: JsonValue, maxLength: number): boolean =>
+  typeof value === "string" &&
+  value.length <= maxLength &&
+  !hasControl(value, true) &&
+  !/[@/\\]/u.test(value);
+type NumericSidecar = WebNetworkCaptureRecord["numeric_literals"][number];
+type BinaryField = WebNetworkCaptureRecord["binary_fields"][number];
+const MITMPROXY_INTEGER_FIELDS = new Set(["port", "status_code"]);
+/** Retained native producer bytes whose content, length and digest are all the text's UTF-8. */
+const describesText = (descriptor: BinaryField, text: string): boolean => {
+  if (
+    descriptor.representation !== "producer-bytes" ||
+    descriptor.state !== "retained"
+  )
+    return false;
+  const utf8 = Buffer.from(text, "utf8");
+  return (
+    descriptor.bytes === utf8.length &&
+    descriptor.content_base64 === utf8.toString("base64") &&
+    descriptor.sha256 === createHash("sha256").update(utf8).digest("hex")
+  );
+};
+/**
+ * Integer slots need exactly one integer sidecar whose literal is the value's
+ * canonical decimal, and no byte descriptor. String slots need no sidecar and
+ * at most one byte descriptor, which must describe the value's own UTF-8.
+ * Selecting a field also selects its sidecars, so this keeps every copied
+ * literal small and consistent.
+ */
+const representationMatches = (
+  field: string,
+  value: JsonValue,
+  sidecars: readonly NumericSidecar[],
+  bytes: readonly BinaryField[],
+): boolean => {
+  if (MITMPROXY_INTEGER_FIELDS.has(field))
+    return (
+      bytes.length === 0 &&
+      typeof value === "number" &&
+      sidecars.length === 1 &&
+      sidecars[0]?.producer_type === "integer" &&
+      sidecars[0].literal === String(value)
+    );
+  if (sidecars.length !== 0 || bytes.length > 1) return false;
+  const [descriptor] = bytes;
+  return (
+    descriptor === undefined ||
+    (typeof value === "string" && describesText(descriptor, value))
+  );
+};
+const headlineShape = (field: string, value: JsonValue): boolean => {
+  switch (field) {
+    case "scheme":
+      return (
+        typeof value === "string" &&
+        /^[A-Za-z][A-Za-z0-9+.-]{0,31}$/u.test(value)
+      );
+    case "host":
+      return hostLike(value, 255);
+    case "authority":
+      return hostLike(value, 262);
+    case "port":
+      return integerIn(value, 0, 65_535);
+    case "status_code":
+      return integerIn(value, 100, 999);
+    case "path":
+      return (
+        typeof value === "string" &&
+        value.length <= MITMPROXY_PATH_MAX_LENGTH &&
+        !hasControl(value, false) &&
+        !value.includes("@") &&
+        (value === "*" ||
+          (value.startsWith("/") &&
+            !value.startsWith("//") &&
+            !value.startsWith("/\\")))
+      );
+    default:
+      return false;
+  }
+};
+/** Shape checks run first, so the representation check only sees bounded values. */
+const mitmproxyHeadline = (
+  field: string,
+  value: JsonValue,
+  sidecars: readonly NumericSidecar[],
+  bytes: readonly BinaryField[],
+): boolean =>
+  headlineShape(field, value) &&
+  representationMatches(field, value, sidecars, bytes);
+
+/**
+ * The container format alone does not make a flow HTTP; its own type does,
+ * when the producer supplied that type as text.
+ */
+const mitmproxyHttpFlow = (
+  format: string,
+  source: Readonly<Record<string, JsonValue>>,
+  producerText: (pointer: string) => boolean,
+): boolean =>
+  format === "mitmproxy" && source.type === "http" && producerText("/type");
+
 /** Select already parsed producer facts without interpreting HTTP or payload bytes again. */
-const preview = (record: WebNetworkCaptureRecord) => {
+const preview = (record: WebNetworkCaptureRecord, format: string) => {
   const source = object(record.reported);
   const reported: Record<string, JsonValue> = {};
   const selectedPointers = new Set<string>();
+  const sidecarsAt = (pointer: string): readonly NumericSidecar[] =>
+    record.numeric_literals.filter((literal) => literal.pointer === pointer);
+  // A pointer the record marks as redacted, or that lies under a redacted
+  // value, is never promoted even if the value is still present (imported or
+  // caller-supplied Evidence). A property-name redaction only identifies the
+  // parent of an omitted key, so it hides no sibling values.
+  const covers = (coordinate: string, pointer: string): boolean =>
+    pointer === coordinate || pointer.startsWith(`${coordinate}/`);
+  // Producers mark excluded bytes with a redacted descriptor as well; either
+  // facet withholds the value even when the other one is missing.
+  const redacted = (pointer: string): boolean =>
+    record.redactions.some((redaction) =>
+      "scope" in redaction
+        ? redaction.pointer === pointer
+        : covers(redaction.pointer, pointer),
+    ) ||
+    record.binary_fields.some(
+      (field) => field.state === "redacted" && covers(field.pointer, pointer),
+    );
+  const bytesAt = (pointer: string): readonly BinaryField[] =>
+    record.binary_fields.filter((field) => field.pointer === pointer);
+  // A scalar is consistent only when no numeric sidecar or byte descriptor
+  // sits on an ancestor (the producer held a scalar there) and no facet sits
+  // beneath it (the producer held a container at it).
+  const usable = (pointer: string): boolean =>
+    !redacted(pointer) &&
+    ![...record.numeric_literals, ...record.binary_fields].some(
+      (facet) => facet.pointer !== pointer && covers(facet.pointer, pointer),
+    ) &&
+    ![
+      ...record.numeric_literals,
+      ...record.binary_fields,
+      ...record.redactions,
+    ].some(
+      (facet) => facet.pointer !== pointer && covers(pointer, facet.pointer),
+    );
+  // A numeric sidecar or a byte descriptor means the producer held a number
+  // or bytes there, whatever display text the record shows.
+  const producerText = (pointer: string): boolean =>
+    usable(pointer) &&
+    sidecarsAt(pointer).length === 0 &&
+    bytesAt(pointer).length === 0;
   if (source !== null) {
+    const mitmproxyHttp = mitmproxyHttpFlow(format, source, producerText);
     for (const key of ["session_id", "name", "time", "startedDateTime", "type"])
       if (Object.hasOwn(source, key) && source[key] !== undefined) {
         reported[key] = source[key];
@@ -83,19 +268,30 @@ const preview = (record: WebNetworkCaptureRecord) => {
         continue;
       }
       const selected: Record<string, JsonValue> = {};
-      for (const field of [
-        "method",
-        "url",
-        "httpVersion",
-        "http_version",
-        "status",
-        "statusText",
-        "reason",
-      ])
-        if (Object.hasOwn(fields, field) && fields[field] !== undefined) {
-          selected[field] = fields[field];
-          selectedPointers.add(`/${key}/${field}`);
-        }
+      const candidates = [
+        ...HEADLINE_FIELDS.map((field) => [field, false] as const),
+        ...(mitmproxyHttp ? (MITMPROXY_HEADLINE_FIELDS[key] ?? []) : []).map(
+          (field) => [field, true] as const,
+        ),
+      ];
+      for (const [field, mitmproxy] of candidates) {
+        const fieldValue = fields[field];
+        if (
+          !Object.hasOwn(fields, field) ||
+          fieldValue === undefined ||
+          (mitmproxy &&
+            (!usable(`/${key}/${field}`) ||
+              !mitmproxyHeadline(
+                field,
+                fieldValue,
+                sidecarsAt(`/${key}/${field}`),
+                bytesAt(`/${key}/${field}`),
+              )))
+        )
+          continue;
+        selected[field] = fieldValue;
+        selectedPointers.add(`/${key}/${field}`);
+      }
       reported[key] = selected;
     }
   }
@@ -245,7 +441,9 @@ export const projectWebNetworkCaptureView = (
     view,
     ...shared,
     items: captureViewItemsSchema.parse(
-      view.detail === "complete" ? records : records.map(preview),
+      view.detail === "complete"
+        ? records
+        : records.map((record) => preview(record, report.format)),
     ),
     coverage: pageViewCoverage(
       view.offset,
