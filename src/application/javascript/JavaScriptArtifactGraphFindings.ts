@@ -145,6 +145,23 @@ const addReference = (
         properties: { resolved_path: resolved.path },
         limitations: resolved.limitations,
       });
+    else if (resolved !== null)
+      addStaticInferenceEdge(context, {
+        source: worker,
+        target: resolved.node,
+        file: input.file,
+        range: input.value.location,
+        coverage: input.coverage,
+        relation: "maps_to",
+        properties: {
+          resolved_path: null,
+          ...(resolved.resolutionStatus === undefined
+            ? {}
+            : { resolution_status: resolved.resolutionStatus }),
+          ...artifactPathResolutionProperties(resolved.resolution),
+        },
+        limitations: resolved.limitations,
+      });
     return;
   }
   // A reference that resolves to its own source, such as a bundled module

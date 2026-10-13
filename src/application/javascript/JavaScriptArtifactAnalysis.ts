@@ -298,7 +298,7 @@ export const analyzeAndAdoptJavaScriptArtifactFiles = async (
         semantic: null,
         analysis_failure: failure,
       });
-      if (file.kind === "javascript")
+      if (file.kind === "javascript" || file.kind === "unsupported")
         projection.recordUnavailableFile(
           file,
           failure.reason,
